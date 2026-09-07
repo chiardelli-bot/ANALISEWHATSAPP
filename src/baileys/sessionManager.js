@@ -1,0 +1,262 @@
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const pino = require('pino');
+const QRCode = require('qrcode');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  downloadMediaMessage,
+} = require('@whiskeysockets/baileys');
+
+const { pool } = require('../db');
+
+const AUTH_DIR = process.env.AUTH_DIR || './storage/auth';
+const MEDIA_DIR = process.env.MEDIA_DIR || './storage/media';
+
+fs.mkdirSync(AUTH_DIR, { recursive: true });
+fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
+// executivoId -> { sock, status, qr }
+const sessions = new Map();
+
+let ioRef = null;
+function attachIo(io) {
+  ioRef = io;
+}
+function emit(event, payload) {
+  if (ioRef) ioRef.emit(event, payload);
+}
+
+function extMimetype(mimetype) {
+  if (!mimetype) return 'bin';
+  const map = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'video/mp4': 'mp4',
+    'audio/ogg': 'ogg',
+    'audio/ogg; codecs=opus': 'ogg',
+    'audio/mpeg': 'mp3',
+    'application/pdf': 'pdf',
+  };
+  return map[mimetype] || mimetype.split('/')[1]?.split(';')[0] || 'bin';
+}
+
+function getMessageTypeAndText(msg) {
+  const m = msg.message;
+  if (!m) return { tipo: 'other', texto: null };
+  if (m.conversation) return { tipo: 'text', texto: m.conversation };
+  if (m.extendedTextMessage) return { tipo: 'text', texto: m.extendedTextMessage.text };
+  if (m.imageMessage) return { tipo: 'image', texto: m.imageMessage.caption || null };
+  if (m.videoMessage) return { tipo: 'video', texto: m.videoMessage.caption || null };
+  if (m.audioMessage) return { tipo: 'audio', texto: null };
+  if (m.documentMessage) return { tipo: 'document', texto: m.documentMessage.caption || m.documentMessage.fileName || null };
+  if (m.stickerMessage) return { tipo: 'sticker', texto: null };
+  if (m.locationMessage) {
+    const { degreesLatitude, degreesLongitude } = m.locationMessage;
+    return { tipo: 'location', texto: `Localização: ${degreesLatitude}, ${degreesLongitude}` };
+  }
+  if (m.contactMessage) return { tipo: 'other', texto: `Contato: ${m.contactMessage.displayName || ''}` };
+  return { tipo: 'other', texto: null };
+}
+
+function hasDownloadableMedia(msg) {
+  const m = msg.message;
+  return !!(m && (m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage));
+}
+
+async function upsertChat(executivoId, waChatId, nome, isGroup, lastMessageAt, preview) {
+  const { rows } = await pool.query(
+    `INSERT INTO chats (executivo_id, wa_chat_id, nome, is_group, last_message_at, last_message_preview)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (executivo_id, wa_chat_id) DO UPDATE SET
+       nome = COALESCE(EXCLUDED.nome, chats.nome),
+       last_message_at = GREATEST(chats.last_message_at, EXCLUDED.last_message_at),
+       last_message_preview = EXCLUDED.last_message_preview
+     RETURNING id`,
+    [executivoId, waChatId, nome, isGroup, lastMessageAt, preview]
+  );
+  return rows[0].id;
+}
+
+async function handleIncomingMessage(executivoId, sock, msg) {
+  try {
+    if (!msg.message) return;
+    const waChatId = msg.key.remoteJid;
+    if (!waChatId || waChatId === 'status@broadcast') return;
+    const isGroup = waChatId.endsWith('@g.us');
+    const fromMe = !!msg.key.fromMe;
+    const tsMs = (Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000)) * 1000;
+
+    let chatName = null;
+    try {
+      chatName = isGroup
+        ? (sock.chatMetadataCache?.get?.(waChatId)?.subject) || null
+        : null;
+    } catch (_) { /* ignore */ }
+
+    const { tipo, texto } = getMessageTypeAndText(msg);
+    const senderNumber = (fromMe ? sock.user?.id : (msg.key.participant || waChatId) || '').split('@')[0].split(':')[0];
+    const senderName = fromMe ? 'Você (executivo)' : (msg.pushName || senderNumber);
+
+    const preview = texto || `[${tipo}]`;
+    const chatId = await upsertChat(executivoId, waChatId, chatName, isGroup, new Date(tsMs), preview);
+
+    let mediaPath = null;
+    let mediaMimetype = null;
+    if (hasDownloadableMedia(msg)) {
+      try {
+        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+        const mm = msg.message.imageMessage?.mimetype
+          || msg.message.videoMessage?.mimetype
+          || msg.message.audioMessage?.mimetype
+          || msg.message.documentMessage?.mimetype
+          || msg.message.stickerMessage?.mimetype
+          || 'application/octet-stream';
+        mediaMimetype = mm;
+        const dir = path.join(MEDIA_DIR, `exec_${executivoId}`);
+        fs.mkdirSync(dir, { recursive: true });
+        const filename = `${Date.now()}_${crypto.randomUUID()}.${extMimetype(mm)}`;
+        const fullPath = path.join(dir, filename);
+        fs.writeFileSync(fullPath, buffer);
+        mediaPath = path.join(`exec_${executivoId}`, filename);
+      } catch (err) {
+        console.error(`[exec ${executivoId}] falha ao baixar mídia:`, err.message);
+      }
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO messages (chat_id, wa_message_id, from_me, sender_name, sender_number, tipo, texto, media_path, media_mimetype, wa_timestamp)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [chatId, msg.key.id, fromMe, senderName, senderNumber, tipo, texto, mediaPath, mediaMimetype, new Date(tsMs)]
+    );
+
+    emit('nova_mensagem', {
+      executivoId,
+      chatId,
+      waChatId,
+      chatName,
+      isGroup,
+      message: rows[0],
+    });
+  } catch (err) {
+    console.error(`[exec ${executivoId}] erro processando mensagem:`, err);
+  }
+}
+
+async function setExecutivoStatus(executivoId, status, extra = {}) {
+  const fields = ['status = $2'];
+  const values = [executivoId, status];
+  let idx = 3;
+  if ('last_qr' in extra) {
+    fields.push(`last_qr = $${idx++}`);
+    values.push(extra.last_qr);
+  }
+  if ('wa_number' in extra) {
+    fields.push(`wa_number = $${idx++}`);
+    values.push(extra.wa_number);
+  }
+  await pool.query(`UPDATE executivos SET ${fields.join(', ')} WHERE id = $1`, values);
+  emit('status_executivo', { executivoId, status, ...extra });
+}
+
+async function startSession(executivoId) {
+  if (sessions.has(executivoId)) {
+    const existing = sessions.get(executivoId);
+    if (existing.status === 'conectado' || existing.status === 'aguardando_qr') return existing;
+  }
+
+  const authDir = path.join(AUTH_DIR, `exec_${executivoId}`);
+  fs.mkdirSync(authDir, { recursive: true });
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    syncFullHistory: false,
+    markOnlineOnConnect: false, // não altera o "online" do executivo
+  });
+
+  const entry = { sock, status: 'conectando', qr: null };
+  sessions.set(executivoId, entry);
+
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      const qrDataUrl = await QRCode.toDataURL(qr);
+      entry.status = 'aguardando_qr';
+      entry.qr = qrDataUrl;
+      await setExecutivoStatus(executivoId, 'aguardando_qr', { last_qr: qrDataUrl });
+    }
+
+    if (connection === 'open') {
+      entry.status = 'conectado';
+      entry.qr = null;
+      const waNumber = sock.user?.id?.split(':')[0] || null;
+      await setExecutivoStatus(executivoId, 'conectado', { last_qr: null, wa_number: waNumber });
+      console.log(`[exec ${executivoId}] conectado (${waNumber})`);
+    }
+
+    if (connection === 'close') {
+      entry.status = 'desconectado';
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      await setExecutivoStatus(executivoId, 'desconectado');
+      sessions.delete(executivoId);
+      if (shouldReconnect) {
+        setTimeout(() => startSession(executivoId).catch((e) => console.error(e)), 3000);
+      } else {
+        // logout definitivo: limpa credenciais salvas para permitir novo QR
+        try {
+          fs.rmSync(authDir, { recursive: true, force: true });
+        } catch (_) { /* ignore */ }
+      }
+    }
+  });
+
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify' && type !== 'append') return;
+    for (const msg of messages) {
+      await handleIncomingMessage(executivoId, sock, msg);
+    }
+  });
+
+  return entry;
+}
+
+async function restoreAllSessions() {
+  const { rows } = await pool.query(`SELECT id FROM executivos WHERE status <> 'desconectado' OR wa_number IS NOT NULL`);
+  for (const row of rows) {
+    startSession(row.id).catch((e) => console.error('erro ao restaurar sessão', row.id, e));
+  }
+}
+
+function getSessionInfo(executivoId) {
+  return sessions.get(executivoId) || null;
+}
+
+async function logoutSession(executivoId) {
+  const entry = sessions.get(executivoId);
+  if (entry?.sock) {
+    try { await entry.sock.logout(); } catch (_) { /* ignore */ }
+  }
+  sessions.delete(executivoId);
+  const authDir = path.join(AUTH_DIR, `exec_${executivoId}`);
+  try { fs.rmSync(authDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  await setExecutivoStatus(executivoId, 'desconectado', { last_qr: null });
+}
+
+module.exports = {
+  attachIo,
+  startSession,
+  restoreAllSessions,
+  getSessionInfo,
+  logoutSession,
+  MEDIA_DIR,
+};

@@ -1,0 +1,24 @@
+{
+  "name": "whatsapp-monitor",
+  "version": "1.0.0",
+  "description": "Painel de monitoramento (somente leitura) de conversas de WhatsApp de múltiplos executivos via Baileys",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "pg": "^8.12.0",
+    "pino": "^9.3.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5"
+  }
+}

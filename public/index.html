@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Monitor de Conversas</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="tela-login" class="tela-login">
+  <form id="form-login" class="card-login">
+    <h1>Monitor de Conversas</h1>
+    <p class="subtitulo">Acesso restrito</p>
+    <input type="text" id="login-usuario" placeholder="Usuário" autocomplete="username" required />
+    <input type="password" id="login-senha" placeholder="Senha" autocomplete="current-password" required />
+    <button type="submit">Entrar</button>
+    <div id="login-erro" class="erro"></div>
+  </form>
+</div>
+
+<div id="app" class="app oculto">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h2>Executivos</h2>
+      <button id="btn-add-executivo" title="Adicionar executivo">+</button>
+    </div>
+    <div id="lista-executivos" class="lista-executivos"></div>
+    <button id="btn-logout" class="btn-logout">Sair</button>
+  </aside>
+
+  <section class="painel-chats">
+    <div class="painel-chats-header">
+      <h3 id="titulo-executivo">Selecione um executivo</h3>
+    </div>
+    <div id="lista-chats" class="lista-chats"></div>
+  </section>
+
+  <section class="painel-mensagens">
+    <div class="painel-mensagens-header">
+      <h3 id="titulo-chat">Selecione uma conversa</h3>
+    </div>
+    <div id="lista-mensagens" class="lista-mensagens"></div>
+    <div class="aviso-somente-leitura">Modo somente leitura — esta ferramenta não envia mensagens</div>
+  </section>
+</div>
+
+<div id="modal-qr" class="modal oculto">
+  <div class="modal-conteudo">
+    <h3 id="modal-qr-titulo">Conectar WhatsApp</h3>
+    <div id="modal-qr-corpo"></div>
+    <button id="modal-qr-fechar">Fechar</button>
+  </div>
+</div>
+
+<div id="modal-novo-executivo" class="modal oculto">
+  <div class="modal-conteudo">
+    <h3>Novo executivo</h3>
+    <input type="text" id="novo-executivo-nome" placeholder="Nome do executivo" />
+    <div class="modal-acoes">
+      <button id="novo-executivo-cancelar">Cancelar</button>
+      <button id="novo-executivo-salvar">Adicionar</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
