@@ -54,4 +54,20 @@ router.post('/:id/desconectar', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Pede ao WhatsApp mais histórico das conversas já conhecidas desse executivo,
+// sem precisar desconectar/reconectar. As mensagens chegam de forma assíncrona
+// (evento 'historico_sincronizado' via socket), então respondemos logo e o
+// trabalho continua em segundo plano.
+router.post('/:id/ressincronizar', async (req, res) => {
+  const id = Number(req.params.id);
+  const info = sessionManager.getSessionInfo(id);
+  if (!info || info.status !== 'conectado') {
+    return res.status(400).json({ erro: 'Executivo precisa estar conectado' });
+  }
+  sessionManager.solicitarHistoricoAdicional(id).catch((err) => {
+    console.error(`[exec ${id}] erro ao solicitar histórico adicional:`, err);
+  });
+  res.json({ ok: true });
+});
+
 module.exports = router;

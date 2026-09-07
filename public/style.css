@@ -73,6 +73,13 @@ body {
   height: 100vh;
 }
 
+/* Sem isso, os itens do grid crescem para caber o conteúdo em vez de ficar do
+   tamanho da tela e rolar por dentro — é por isso que a lista de conversas
+   parecia "cortada" no fim da tela sem dar pra rolar. */
+.sidebar, .painel-chats, .painel-mensagens {
+  min-height: 0;
+}
+
 .sidebar {
   background: var(--bg-elevado);
   border-right: 1px solid var(--borda);
@@ -99,7 +106,7 @@ body {
   line-height: 1;
 }
 
-.lista-executivos { flex: 1; overflow-y: auto; }
+.lista-executivos { flex: 1; overflow-y: auto; min-height: 0; }
 
 .item-executivo {
   display: flex;
@@ -142,10 +149,27 @@ body {
 .painel-chats-header, .painel-mensagens-header {
   padding: 14px 16px;
   border-bottom: 1px solid var(--borda);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.painel-chats-header h3, .painel-mensagens-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.painel-chats-header h3, .painel-mensagens-header h3 { margin: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.lista-chats { flex: 1; overflow-y: auto; }
+.btn-sincronizar-historico {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--borda);
+  color: var(--texto-fraco);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-sincronizar-historico:hover { color: var(--texto); border-color: var(--acento); }
+.btn-sincronizar-historico:disabled { opacity: 0.6; cursor: default; }
+
+.lista-chats { flex: 1; overflow-y: auto; min-height: 0; }
 
 .item-chat {
   padding: 12px 16px;
@@ -163,10 +187,34 @@ body {
 .lista-mensagens {
   flex: 1;
   overflow-y: auto;
+  min-height: 0;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* Barra de rolagem sempre visível (fina), em vez de depender do "auto-hide" do
+   sistema operacional — assim fica claro que dá pra rolar essas listas. */
+.lista-chats, .lista-mensagens, .lista-executivos {
+  scrollbar-width: thin;
+  scrollbar-color: var(--borda) transparent;
+}
+.lista-chats::-webkit-scrollbar,
+.lista-mensagens::-webkit-scrollbar,
+.lista-executivos::-webkit-scrollbar {
+  width: 8px;
+}
+.lista-chats::-webkit-scrollbar-thumb,
+.lista-mensagens::-webkit-scrollbar-thumb,
+.lista-executivos::-webkit-scrollbar-thumb {
+  background: var(--borda);
+  border-radius: 4px;
+}
+.lista-chats::-webkit-scrollbar-thumb:hover,
+.lista-mensagens::-webkit-scrollbar-thumb:hover,
+.lista-executivos::-webkit-scrollbar-thumb:hover {
+  background: var(--texto-fraco);
 }
 
 .btn-carregar-anteriores {

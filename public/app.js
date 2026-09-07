@@ -93,6 +93,7 @@
       renderExecutivos();
       if (payload.executivoId === estado.executivoAtivoId) {
         atualizarTituloExecutivo();
+        atualizarBotaoSincronizarHistorico();
       }
       if (payload.last_qr && el('modal-qr').dataset.execId == payload.executivoId) {
         exibirQr(payload.last_qr, payload.status);
@@ -113,7 +114,7 @@
       }
     });
 
-    // Disparado uma vez, logo após um executivo parear o QR: o WhatsApp entregou
+    // Disparado uma vek, logo após um executivo parear o QR: o WhatsApp entregou
     // o histórico de conversas do celular. Recarrega a lista/conversa na tela.
     estado.socket.on('historico_sincronizado', async (payload) => {
       if (payload.executivoId !== estado.executivoAtivoId) return;
@@ -179,6 +180,7 @@
     estado.chatAtivoId = null;
     renderExecutivos();
     atualizarTituloExecutivo();
+    atualizarBotaoSincronizarHistorico();
     el('titulo-chat').textContent = 'Selecione uma conversa';
     el('lista-mensagens').innerHTML = '';
     await carregarChats(exec.id);
@@ -188,6 +190,36 @@
     const exec = estado.executivos.find((e) => e.id === estado.executivoAtivoId);
     el('titulo-executivo').textContent = exec ? `${exec.nome} — conversas` : 'Selecione um executivo';
   }
+
+  // ---------- sincronizar histórico sob demanda ----------
+  // Pede ao WhatsApp mensagens mais antigas das conversas já conhecidas, sem
+  // precisar desconectar/reconectar o executivo. As mensagens novas chegam
+  // depois, de forma assíncrona, pelo mesmo evento 'historico_sincronizado'
+  // que já recarrega a lista de chats e a conversa aberta.
+  function atualizarBotaoSincronizarHistorico() {
+    const btn = el('btn-sincronizar-historico');
+    const exec = estado.executivos.find((e) => e.id === estado.executivoAtivoId);
+    btn.classList.toggle('oculto', !exec || exec.status !== 'conectado');
+  }
+
+  el('btn-sincronizar-historico').addEventListener('click', async () => {
+    if (!estado.executivoAtivoId) return;
+    const btn = el('btn-sincronizar-historico');
+    btn.disabled = true;
+    const textoOriginal = btn.textContent;
+    btn.textContent = 'Sincronizando…';
+    try {
+      await api(`/api/executivos/${estado.executivoAtivoId}/ressincronizar`, { method: 'POST' });
+      btn.textContent = 'Solicitado — aguarde';
+    } catch (err) {
+      btn.textContent = 'Erro ao sincronizar';
+    } finally {
+      setTimeout(() => {
+        btn.textContent = textoOriginal;
+        btn.disabled = false;
+      }, 4000);
+    }
+  });
 
   // ---------- adicionar executivo ----------
   el('btn-add-executivo').addEventListener('click', () => {

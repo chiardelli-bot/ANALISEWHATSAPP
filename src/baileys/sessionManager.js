@@ -337,11 +337,55 @@ async function logoutSession(executivoId) {
   await setExecutivoStatus(executivoId, 'desconectado', { last_qr: null });
 }
 
+// Pede ao WhatsApp mensagens mais antigas para cada conversa já conhecida desse
+// executivo (sincronização de histórico "sob demanda" do Baileys). Diferente do
+// syncFullHistory (que só acontece uma vez, ao escanear o QR), isso funciona com
+// a sessão já conectada — sem precisar desconectar e reconectar o WhatsApp.
+// As mensagens retornadas chegam de forma assíncrona pelo mesmo evento
+// 'messaging-history.set' já tratado em startSession, então a deduplicação e o
+// aviso ao painel (evento 'historico_sincronizado') acontecem automaticamente.
+async function solicitarHistoricoAdicional(executivoId) {
+  const entry = sessions.get(executivoId);
+  if (!entry?.sock || entry.status !== 'conectado') {
+    throw new Error('Executivo não está conectado');
+  }
+  const sock = entry.sock;
+
+  // Mensagem mais antiga já conhecida em cada conversa desse executivo — é a
+  // partir dela que o WhatsApp busca o que veio antes.
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (m.chat_id)
+       m.chat_id, c.wa_chat_id, m.wa_message_id, m.from_me, m.wa_timestamp
+     FROM messages m
+     JOIN chats c ON c.id = m.chat_id
+     WHERE c.executivo_id = $1 AND m.wa_message_id IS NOT NULL
+     ORDER BY m.chat_id, m.wa_timestamp ASC`,
+    [executivoId]
+  );
+
+  console.log(`[exec ${executivoId}] solicitando històico adicional de ${rows.length} conversa(s)`);
+
+  for (const row of rows) {
+    try {
+      await sock.fetchMessageHistory(
+        50,
+        { remoteJid: row.wa_chat_id, fromMe: row.from_me, id: row.wa_message_id },
+        new Date(row.wa_timestamp).getTime()
+      );
+    } catch (err) {
+      console.error(`[exec ${executivoId}] falha ao pedir histórico de ${row.wa_chat_id}:`, err.message);
+    }
+    // Evita disparar muitas requisições de uma vez (o WhatsApp limita a taxa desses pedidos).
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+}
+
 module.exports = {
   attachIo,
   startSession,
   restoreAllSessions,
   getSessionInfo,
   logoutSession,
+  solicitarHistoricoAdicional,
   MEDIA_DIR,
 };
