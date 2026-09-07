@@ -11,6 +11,7 @@ const sessionManager = require('./baileys/sessionManager');
 const { router: authRouter, requireAuth } = require('./routes/auth');
 const executivosRouter = require('./routes/executivos');
 const chatsRouter = require('./routes/chats');
+const comentariosRouter = require('./routes/comentarios');
 
 const PORT = process.env.PORT || 3000;
 
@@ -46,6 +47,7 @@ async function main() {
   // A partir daqui, tudo exige login
   app.use('/api/executivos', requireAuth, executivosRouter);
   app.use('/api/chats', requireAuth, chatsRouter);
+  app.use('/api/comentarios', requireAuth, comentariosRouter);
 
   // Serve arquivos de mídia baixados do WhatsApp, só para quem está logado
   app.get('/media/:executivoDir/:filename', requireAuth, (req, res) => {

@@ -32,7 +32,13 @@
   <section class="painel-chats">
     <div class="painel-chats-header">
       <h3 id="titulo-executivo">Selecione um executivo</h3>
+      <button id="btn-comentarios-executivo" class="btn-comentarios-executivo oculto" title="Ver todos os comentários já feitos sobre este executivo, para usar num feedback">Feedback</button>
       <button id="btn-sincronizar-historico" class="btn-sincronizar-historico oculto" title="Busca no WhatsApp mensagens mais antigas das conversas, sem desconectar">Sincronizar histórico</button>
+    </div>
+    <div class="busca-chats">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <input type="text" id="busca-chats-input" placeholder="Buscar por palavra ou telefone" />
+      <button type="button" id="busca-chats-limpar" class="busca-chats-limpar oculto" title="Limpar busca">✕</button>
     </div>
     <div id="lista-chats" class="lista-chats"></div>
   </section>
@@ -40,6 +46,7 @@
   <section class="painel-mensagens">
     <div class="painel-mensagens-header">
       <h3 id="titulo-chat">Selecione uma conversa</h3>
+      <button id="btn-comentarios-chat" class="btn-comentarios-chat oculto" title="Ver e adicionar comentários sobre esta conversa">Comentários</button>
     </div>
     <button id="btn-carregar-anteriores" class="btn-carregar-anteriores oculto">Carregar mensagens anteriores</button>
     <div id="lista-mensagens" class="lista-mensagens"></div>
@@ -52,6 +59,18 @@
     <h3 id="modal-qr-titulo">Conectar WhatsApp</h3>
     <div id="modal-qr-corpo"></div>
     <button id="modal-qr-fechar">Fechar</button>
+  </div>
+</div>
+
+<div id="modal-comentarios" class="modal oculto">
+  <div class="modal-conteudo modal-comentarios-conteudo">
+    <h3 id="modal-comentarios-titulo">Comentários</h3>
+    <div id="lista-comentarios" class="lista-comentarios"></div>
+    <form id="form-comentario" class="form-comentario">
+      <textarea id="novo-comentario-texto" placeholder="Escreva um comentário sobre esta conversa, para usar depois num feedback…" rows="3"></textarea>
+      <button type="submit">Salvar comentário</button>
+    </form>
+    <button type="button" id="modal-comentarios-fechar">Fechar</button>
   </div>
 </div>
 

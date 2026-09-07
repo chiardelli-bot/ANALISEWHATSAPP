@@ -131,6 +131,52 @@ async function upsertChat(executivoId, waChatId, nome, isGroup, lastMessageAt, p
   return rows[0].id;
 }
 
+// Nome "de verdade" de um contato: prioriza o nome que o executivo salvou na
+// agenda do celular (contact.name) sobre o nome que a própria pessoa escolheu
+// no WhatsApp (contact.notify) — é isso que faz aparecer "Jacqueline Malthez"
+// em vez do número cru na lista de conversas.
+function melhorNomeContato(contact) {
+  return contact?.name || contact?.notify || null;
+}
+
+// Guarda o nome mais recente conhecido para um JID e marca pra sincronizar com
+// o banco (com um pequeno atraso, pra não disparar uma atualização por contato
+// quando chegam centenas de uma vez na sincronização inicial).
+function registrarNome(executivoId, entry, jid, nome) {
+  if (!jid || !nome) return;
+  if (entry.nomes.get(jid) === nome) return;
+  entry.nomes.set(jid, nome);
+  entry.nomesPendentes.add(jid);
+  agendarAtualizacaoNomes(executivoId, entry);
+}
+
+function agendarAtualizacaoNomes(executivoId, entry) {
+  if (entry.nomesTimer) return; // já tem uma atualização agendada, ela vai pegar os pendentes também
+  entry.nomesTimer = setTimeout(async () => {
+    entry.nomesTimer = null;
+    const jids = [...entry.nomesPendentes];
+    entry.nomesPendentes.clear();
+    let algumaMudanca = false;
+    for (const jid of jids) {
+      const nome = entry.nomes.get(jid);
+      if (!nome) continue;
+      try {
+        // Atualiza conversas já existentes que ainda não tinham esse nome — cobre
+        // o caso do contato ser sincronizado depois que a conversa já foi criada
+        // por uma mensagem (chat guardado só com o número).
+        const { rowCount } = await pool.query(
+          `UPDATE chats SET nome = $1 WHERE executivo_id = $2 AND wa_chat_id = $3 AND nome IS DISTINCT FROM $1`,
+          [nome, executivoId, jid]
+        );
+        if (rowCount > 0) algumaMudanca = true;
+      } catch (err) {
+        console.error(`[exec ${executivoId}] falha ao atualizar nome de ${jid}:`, err.message);
+      }
+    }
+    if (algumaMudanca) emit('nome_contato_atualizado', { executivoId });
+  }, 1500);
+}
+
 // opts.silent: usado na sincronização de histórico (muitas mensagens de uma vez) —
 // evita disparar um evento em tempo real por mensagem antiga.
 async function handleIncomingMessage(executivoId, sock, msg, opts = {}) {
@@ -143,12 +189,10 @@ async function handleIncomingMessage(executivoId, sock, msg, opts = {}) {
     const fromMe = !!msg.key.fromMe;
     const tsMs = (Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000)) * 1000;
 
-    let chatName = null;
-    try {
-      chatName = isGroup
-        ? (sock.chatMetadataCache?.get?.(waChatId)?.subject) || null
-        : null;
-    } catch (_) { /* ignore */ }
+    // Nome salvo do contato (ou nome/assunto do grupo) já conhecido pra esse JID —
+    // ver processarContatos/processarChats, alimentados pelos eventos do Baileys.
+    const sessionEntry = sessions.get(executivoId);
+    const chatName = sessionEntry?.nomes?.get(waChatId) || null;
 
     const { tipo, texto } = getMessageTypeAndText(msg);
     const senderNumber = (fromMe ? sock.user?.id : (msg.key.participant || waChatId) || '').split('@')[0].split(':')[0];
@@ -253,8 +297,39 @@ async function startSession(executivoId) {
     markOnlineOnConnect: false, // não altera o "online" do executivo
   });
 
-  const entry = { sock, status: 'conectando', qr: null };
+  const entry = {
+    sock,
+    status: 'conectando',
+    qr: null,
+    nomes: new Map(), // wa_chat_id -> nome salvo do contato (ou assunto do grupo)
+    nomesPendentes: new Set(),
+    nomesTimer: null,
+  };
   sessions.set(executivoId, entry);
+
+  // Nomes de contatos e de conversas — é daqui que vem o nome salvo na agenda do
+  // executivo (ex.: "Jacqueline Malthez") em vez do número cru. Chegam tanto na
+  // sincronização inicial (pareamento) quanto aos poucos depois, conforme o
+  // WhatsApp libera mais contatos.
+  function processarContatos(contatos) {
+    for (const c of contatos || []) {
+      const nome = melhorNomeContato(c);
+      if (!nome) continue;
+      registrarNome(executivoId, entry, c.id, nome);
+      registrarNome(executivoId, entry, c.lid, nome);
+      registrarNome(executivoId, entry, c.jid, nome);
+    }
+  }
+  function processarChats(chatsRecebidos) {
+    for (const c of chatsRecebidos || []) {
+      if (!c.name) continue;
+      registrarNome(executivoId, entry, c.id, c.name);
+    }
+  }
+  sock.ev.on('contacts.upsert', processarContatos);
+  sock.ev.on('contacts.update', processarContatos);
+  sock.ev.on('chats.upsert', processarChats);
+  sock.ev.on('chats.update', processarChats);
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -278,6 +353,7 @@ async function startSession(executivoId) {
 
     if (connection === 'close') {
       entry.status = 'desconectado';
+      if (entry.nomesTimer) clearTimeout(entry.nomesTimer);
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       await setExecutivoStatus(executivoId, 'desconectado');
@@ -303,7 +379,12 @@ async function startSession(executivoId) {
   // Chega uma vez, logo após o pareamento (escaneou o QR), com o histórico que o
   // WhatsApp decidiu compartilhar daquele celular. Processa em silêncio (sem
   // notificar em tempo real mensagem por mensagem) e avisa o painel no final.
-  sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
+  sock.ev.on('messaging-history.set', async ({ messages: historyMessages, chats: historyChats, contacts: historyContacts }) => {
+    // Contatos e conversas chegam junto com esse evento (às vezes até num lote
+    // separado, sem mensagens) — processa antes do "return" abaixo pra não perder
+    // nomes de um lote que só trouxe contatos.
+    processarContatos(historyContacts);
+    processarChats(historyChats);
     if (!historyMessages || historyMessages.length === 0) return;
     console.log(`[exec ${executivoId}] sincronizando histórico: ${historyMessages.length} mensagens`);
     for (const msg of historyMessages) {
@@ -328,6 +409,7 @@ function getSessionInfo(executivoId) {
 
 async function logoutSession(executivoId) {
   const entry = sessions.get(executivoId);
+  if (entry?.nomesTimer) clearTimeout(entry.nomesTimer);
   if (entry?.sock) {
     try { await entry.sock.logout(); } catch (_) { /* ignore */ }
   }
@@ -363,7 +445,7 @@ async function solicitarHistoricoAdicional(executivoId) {
     [executivoId]
   );
 
-  console.log(`[exec ${executivoId}] solicitando històico adicional de ${rows.length} conversa(s)`);
+  console.log(`[exec ${executivoId}] solicitando histórico adicional de ${rows.length} conversa(s)`);
 
   for (const row of rows) {
     try {

@@ -53,6 +53,20 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, wa_timestamp D
 -- (a mesma mensagem pode chegar de novo via "messaging-history.set").
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_waid
   ON messages(chat_id, wa_message_id) WHERE wa_message_id IS NOT NULL;
+
+-- Comentários internos sobre uma conversa (não são mensagens do WhatsApp).
+-- Servem para o gestor anotar observações durante o monitoramento e depois
+-- usar como base num feedback com o executivo.
+CREATE TABLE IF NOT EXISTS comentarios (
+  id SERIAL PRIMARY KEY,
+  executivo_id INTEGER NOT NULL REFERENCES executivos(id) ON DELETE CASCADE,
+  chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  texto TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_comentarios_executivo ON comentarios(executivo_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_comentarios_chat ON comentarios(chat_id, created_at ASC);
 `;
 
 async function initDb() {

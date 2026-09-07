@@ -8,6 +8,7 @@
     mensagemMaisAntigaTs: null, // wa_timestamp da mensagem mais antiga já carregada (para "carregar anteriores")
     podeTerMaisAntigas: false,
     ultimoGrupoRemetente: null, // controla agrupamento visual de mensagens seguidas do mesmo remetente
+    termoBusca: '', // termo atual da busca de conversas (vazio = lista normal)
   };
 
   const el = (id) => document.getElementById(id);
@@ -114,7 +115,7 @@
       }
     });
 
-    // Disparado uma vek, logo após um executivo parear o QR: o WhatsApp entregou
+    // Disparado uma vez, logo após um executivo parear o QR: o WhatsApp entregou
     // o histórico de conversas do celular. Recarrega a lista/conversa na tela.
     estado.socket.on('historico_sincronizado', async (payload) => {
       if (payload.executivoId !== estado.executivoAtivoId) return;
@@ -123,6 +124,18 @@
       if (chatAberto) {
         const chat = estado.chats.find((c) => c.id === chatAberto);
         if (chat) await selecionarChat(chat);
+      }
+    });
+
+    // O nome salvo do contato (ou de um grupo) pode chegar depois da conversa já
+    // aparecer na lista só com o número — quando isso acontece, só atualiza a
+    // lista e o título (sem recarregar as mensagens, que não mudaram).
+    estado.socket.on('nome_contato_atualizado', async (payload) => {
+      if (payload.executivoId !== estado.executivoAtivoId) return;
+      await carregarChats(estado.executivoAtivoId);
+      if (estado.chatAtivoId) {
+        const chat = estado.chats.find((c) => c.id === estado.chatAtivoId);
+        if (chat) el('titulo-chat').textContent = chat.nome || chat.wa_chat_id.split('@')[0];
       }
     });
   }
@@ -181,8 +194,12 @@
     renderExecutivos();
     atualizarTituloExecutivo();
     atualizarBotaoSincronizarHistorico();
+    atualizarBotoesComentarios();
     el('titulo-chat').textContent = 'Selecione uma conversa';
     el('lista-mensagens').innerHTML = '';
+    estado.termoBusca = '';
+    el('busca-chats-input').value = '';
+    el('busca-chats-limpar').classList.add('oculto');
     await carregarChats(exec.id);
   }
 
@@ -218,6 +235,108 @@
         btn.textContent = textoOriginal;
         btn.disabled = false;
       }, 4000);
+    }
+  });
+
+  // ---------- comentários ----------
+  // Comentários são anotações internas do gestor sobre uma conversa (não são
+  // enviadas ao WhatsApp). Ficam guardadas para consulta depois, na hora de dar
+  // um feedback pro executivo — por isso também dá pra ver todos os comentários
+  // de todas as conversas dele de uma vez ("modo executivo").
+  let modoComentarios = 'chat'; // 'chat' (conversa aberta) | 'executivo' (todas as conversas)
+
+  function atualizarBotoesComentarios() {
+    const exec = estado.executivos.find((e) => e.id === estado.executivoAtivoId);
+    el('btn-comentarios-executivo').classList.toggle('oculto', !exec);
+    el('btn-comentarios-chat').classList.toggle('oculto', !estado.chatAtivoId);
+  }
+
+  el('btn-comentarios-chat').addEventListener('click', () => abrirModalComentarios('chat'));
+  el('btn-comentarios-executivo').addEventListener('click', () => abrirModalComentarios('executivo'));
+  el('modal-comentarios-fechar').addEventListener('click', () => {
+    el('modal-comentarios').classList.add('oculto');
+  });
+
+  async function abrirModalComentarios(modo) {
+    modoComentarios = modo;
+    el('form-comentario').classList.toggle('oculto', modo !== 'chat');
+    el('lista-comentarios').innerHTML = '<div class="vazio">Carregando…</div>';
+    el('modal-comentarios').classList.remove('oculto');
+
+    if (modo === 'chat') {
+      const chat = estado.chats.find((c) => c.id === estado.chatAtivoId);
+      el('modal-comentarios-titulo').textContent =
+        `Comentários — ${chat ? (chat.nome || chat.wa_chat_id.split('@')[0]) : 'conversa'}`;
+      const comentarios = await api(`/api/comentarios/chat/${estado.chatAtivoId}`);
+      renderComentarios(comentarios, false);
+    } else {
+      const exec = estado.executivos.find((e) => e.id === estado.executivoAtivoId);
+      el('modal-comentarios-titulo').textContent =
+        `Feedback — ${exec ? exec.nome : 'executivo'} (todos os comentários)`;
+      const comentarios = await api(`/api/comentarios/executivo/${estado.executivoAtivoId}`);
+      renderComentarios(comentarios, true);
+    }
+  }
+
+  function renderComentarios(comentarios, mostrarConversa) {
+    const lista = el('lista-comentarios');
+    lista.innerHTML = '';
+    if (comentarios.length === 0) {
+      lista.innerHTML = '<div class="vazio">Nenhum comentário ainda</div>';
+      return;
+    }
+    comentarios.forEach((c) => lista.appendChild(criarItemComentario(c, mostrarConversa)));
+    if (modoComentarios === 'chat') lista.scrollTop = lista.scrollHeight;
+  }
+
+  function criarItemComentario(c, mostrarConversa) {
+    const div = document.createElement('div');
+    div.className = 'item-comentario';
+    div.dataset.id = c.id;
+    const meta = mostrarConversa
+      ? `${escapeHtml(c.chat_nome || c.wa_chat_id.split('@')[0])} · ${formatarHora(c.created_at)}`
+      : formatarHora(c.created_at);
+    div.innerHTML = `
+      <div class="comentario-cabecalho">
+        <span class="comentario-meta">${meta}</span>
+        <button type="button" class="comentario-excluir" title="Excluir comentário">✕</button>
+      </div>
+      <div class="comentario-texto">${escapeHtml(c.texto)}</div>
+    `;
+    return div;
+  }
+
+  el('lista-comentarios').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.comentario-excluir');
+    if (!btn) return;
+    const item = btn.closest('.item-comentario');
+    if (!confirm('Excluir este comentário?')) return;
+    await api(`/api/comentarios/${item.dataset.id}`, { method: 'DELETE' });
+    item.remove();
+    if (!el('lista-comentarios').children.length) {
+      el('lista-comentarios').innerHTML = '<div class="vazio">Nenhum comentário ainda</div>';
+    }
+  });
+
+  el('form-comentario').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const textarea = el('novo-comentario-texto');
+    const texto = textarea.value.trim();
+    if (!texto || !estado.chatAtivoId) return;
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    try {
+      const comentario = await api(`/api/comentarios/chat/${estado.chatAtivoId}`, {
+        method: 'POST',
+        body: JSON.stringify({ texto }),
+      });
+      textarea.value = '';
+      const lista = el('lista-comentarios');
+      if (lista.querySelector('.vazio')) lista.innerHTML = '';
+      lista.appendChild(criarItemComentario(comentario, false));
+      lista.scrollTop = lista.scrollHeight;
+    } finally {
+      btn.disabled = false;
     }
   });
 
@@ -271,32 +390,80 @@
     renderChats();
   }
 
-  function renderChats() {
+  function renderChats(chatsParaExibir) {
+    const chats = chatsParaExibir || estado.chats;
     const lista = el('lista-chats');
     lista.innerHTML = '';
-    if (estado.chats.length === 0) {
-      lista.innerHTML = '<div class="vazio">Nenhuma conversa ainda</div>';
+    if (chats.length === 0) {
+      lista.innerHTML = `<div class="vazio">${estado.termoBusca ? 'Nenhuma conversa encontrada' : 'Nenhuma conversa ainda'}</div>`;
       return;
     }
-    estado.chats.forEach((chat) => {
+    chats.forEach((chat) => {
       const div = document.createElement('div');
       div.className = 'item-chat' + (chat.id === estado.chatAtivoId ? ' ativo' : '');
+      const previewTexto = chat.trecho || chat.last_message_preview || '';
       div.innerHTML = `
-        <div class="nome-chat">${escapeHtml(chat.nome || chat.wa_chat_id.split('@')[0])}</div>
+        <div class="nome-chat">${destacarTermo(escapeHtml(chat.nome || chat.wa_chat_id.split('@')[0]))}</div>
         <span class="hora">${chat.last_message_at ? formatarHora(chat.last_message_at) : ''}</span>
-        <div class="preview">${escapeHtml(chat.last_message_preview || '')}</div>
+        <div class="preview">${destacarTermo(escapeHtml(previewTexto))}</div>
       `;
       div.addEventListener('click', () => selecionarChat(chat));
       lista.appendChild(div);
     });
   }
 
+  // ---------- busca de conversas ----------
+  // Busca por palavra (no texto das mensagens ou no nome do contato) ou por
+  // telefone (no wa_chat_id), num endpoint do backend — a lista carregada na
+  // tela só tem a prévia da última mensagem, então pesquisar mensagens antigas
+  // precisa consultar o banco.
+  let buscaChatsTimeout = null;
+  el('busca-chats-input').addEventListener('input', (e) => {
+    clearTimeout(buscaChatsTimeout);
+    const termo = e.target.value.trim();
+    el('busca-chats-limpar').classList.toggle('oculto', !termo);
+    buscaChatsTimeout = setTimeout(() => executarBuscaChats(termo), 300);
+  });
+  el('busca-chats-limpar').addEventListener('click', () => {
+    el('busca-chats-input').value = '';
+    el('busca-chats-limpar').classList.add('oculto');
+    executarBuscaChats('');
+  });
+
+  async function executarBuscaChats(termo) {
+    if (!estado.executivoAtivoId) return;
+    estado.termoBusca = termo;
+    if (!termo) {
+      renderChats(estado.chats);
+      return;
+    }
+    try {
+      const resultados = await api(`/api/chats/buscar/${estado.executivoAtivoId}?q=${encodeURIComponent(termo)}`);
+      renderChats(resultados);
+    } catch (_) {
+      // busca silenciosa — se falhar, mantém o que já estava na tela
+    }
+  }
+
+  function destacarTermo(textoEscapado) {
+    if (!estado.termoBusca) return textoEscapado;
+    const termo = estado.termoBusca.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!termo) return textoEscapado;
+    return textoEscapado.replace(new RegExp(`(${termo})`, 'ig'), '<mark>$1</mark>');
+  }
+
   const LIMITE_MENSAGENS = 100;
 
   async function selecionarChat(chat) {
     estado.chatAtivoId = chat.id;
+    // Ao abrir uma conversa (mesmo vindo de um resultado de busca), volta a lista
+    // do meio pro estado normal — evita o resultado da busca "grudar" na tela.
+    estado.termoBusca = '';
+    el('busca-chats-input').value = '';
+    el('busca-chats-limpar').classList.add('oculto');
     renderChats();
     el('titulo-chat').textContent = chat.nome || chat.wa_chat_id.split('@')[0];
+    atualizarBotoesComentarios();
     estado.ultimoGrupoRemetente = null;
     const mensagens = await api(`/api/chats/${chat.id}/mensagens?limit=${LIMITE_MENSAGENS}`);
     const lista = el('lista-mensagens');

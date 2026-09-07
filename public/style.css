@@ -169,6 +169,51 @@ body {
 .btn-sincronizar-historico:hover { color: var(--texto); border-color: var(--acento); }
 .btn-sincronizar-historico:disabled { opacity: 0.6; cursor: default; }
 
+.btn-comentarios-executivo, .btn-comentarios-chat {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--borda);
+  color: var(--texto-fraco);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-comentarios-executivo:hover, .btn-comentarios-chat:hover { color: var(--texto); border-color: var(--acento); }
+
+/* Busca de conversas por palavra ou telefone */
+.busca-chats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--borda);
+  color: var(--texto-fraco);
+}
+.busca-chats svg { flex-shrink: 0; }
+.busca-chats input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--borda);
+  color: var(--texto);
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.busca-chats input:focus { outline: none; border-color: var(--acento); }
+.busca-chats-limpar {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--texto-fraco);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 5px;
+}
+.busca-chats-limpar:hover { color: var(--texto); }
+
+mark { background: var(--amarelo); color: #1a1a1a; border-radius: 2px; padding: 0 1px; }
+
 .lista-chats { flex: 1; overflow-y: auto; min-height: 0; }
 
 .item-chat {
@@ -196,24 +241,27 @@ body {
 
 /* Barra de rolagem sempre visível (fina), em vez de depender do "auto-hide" do
    sistema operacional — assim fica claro que dá pra rolar essas listas. */
-.lista-chats, .lista-mensagens, .lista-executivos {
+.lista-chats, .lista-mensagens, .lista-executivos, .lista-comentarios {
   scrollbar-width: thin;
   scrollbar-color: var(--borda) transparent;
 }
 .lista-chats::-webkit-scrollbar,
 .lista-mensagens::-webkit-scrollbar,
-.lista-executivos::-webkit-scrollbar {
+.lista-executivos::-webkit-scrollbar,
+.lista-comentarios::-webkit-scrollbar {
   width: 8px;
 }
 .lista-chats::-webkit-scrollbar-thumb,
 .lista-mensagens::-webkit-scrollbar-thumb,
-.lista-executivos::-webkit-scrollbar-thumb {
+.lista-executivos::-webkit-scrollbar-thumb,
+.lista-comentarios::-webkit-scrollbar-thumb {
   background: var(--borda);
   border-radius: 4px;
 }
 .lista-chats::-webkit-scrollbar-thumb:hover,
 .lista-mensagens::-webkit-scrollbar-thumb:hover,
-.lista-executivos::-webkit-scrollbar-thumb:hover {
+.lista-executivos::-webkit-scrollbar-thumb:hover,
+.lista-comentarios::-webkit-scrollbar-thumb:hover {
   background: var(--texto-fraco);
 }
 
@@ -313,7 +361,7 @@ body {
   margin: 8px 0;
 }
 .modal-acoes { display: flex; gap: 8px; margin-top: 12px; }
-.modal-acoes button, #modal-qr-fechar {
+.modal-acoes button, #modal-qr-fechar, #modal-comentarios-fechar {
   flex: 1;
   padding: 9px;
   border-radius: 8px;
@@ -323,3 +371,70 @@ body {
   cursor: pointer;
 }
 #novo-executivo-salvar { background: var(--acento); border-color: var(--acento); color: white; }
+
+/* Comentários */
+.modal-comentarios-conteudo {
+  width: 480px;
+  max-width: 90vw;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  max-height: 82vh;
+}
+.lista-comentarios {
+  flex: 1;
+  min-height: 60px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+  padding-right: 4px;
+}
+.item-comentario {
+  background: var(--bg);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.comentario-cabecalho { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.comentario-meta { font-size: 11px; color: var(--texto-fraco); }
+.comentario-texto { font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; margin-top: 4px; }
+.comentario-excluir {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--texto-fraco);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.comentario-excluir:hover { color: var(--vermelho); }
+
+.form-comentario { display: flex; flex-direction: column; gap: 8px; }
+.form-comentario textarea {
+  background: var(--bg);
+  border: 1px solid var(--borda);
+  color: var(--texto);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-family: inherit;
+  resize: vertical;
+}
+.form-comentario textarea:focus { outline: none; border-color: var(--acento); }
+.form-comentario button {
+  align-self: flex-end;
+  background: var(--acento);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+.form-comentario button:hover { opacity: 0.9; }
+.form-comentario button:disabled { opacity: 0.6; cursor: default; }
