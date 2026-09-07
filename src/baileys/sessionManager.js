@@ -120,14 +120,20 @@ async function upsertChat(executivoId, waChatId, nome, isGroup, lastMessageAt, p
      ON CONFLICT (executivo_id, wa_chat_id) DO UPDATE SET
        nome = COALESCE(EXCLUDED.nome, chats.nome),
        last_message_at = GREATEST(chats.last_message_at, EXCLUDED.last_message_at),
-       last_message_preview = EXCLUDED.last_message_preview
+       last_message_preview = CASE
+         WHEN chats.last_message_at IS NULL OR EXCLUDED.last_message_at >= chats.last_message_at
+           THEN EXCLUDED.last_message_preview
+         ELSE chats.last_message_preview
+       END
      RETURNING id`,
     [executivoId, waChatId, nome, isGroup, lastMessageAt, preview]
   );
   return rows[0].id;
 }
 
-async function handleIncomingMessage(executivoId, sock, msg) {
+// opts.silent: usado na sincronização de histórico (muitas mensagens de uma vez) —
+// evita disparar um evento em tempo real por mensagem antiga.
+async function handleIncomingMessage(executivoId, sock, msg, opts = {}) {
   try {
     if (!msg.message) return;
     if (isProtocolOnlyMessage(msg)) return;
@@ -150,6 +156,16 @@ async function handleIncomingMessage(executivoId, sock, msg) {
 
     const preview = texto || `[${tipo}]`;
     const chatId = await upsertChat(executivoId, waChatId, chatName, isGroup, new Date(tsMs), preview);
+
+    // Evita duplicar (e reprocessar mídia à toa) quando a mesma mensagem chega de novo,
+    // por exemplo durante a sincronização de histórico do WhatsApp.
+    if (msg.key.id) {
+      const { rows: existentes } = await pool.query(
+        `SELECT 1 FROM messages WHERE chat_id = $1 AND wa_message_id = $2 LIMIT 1`,
+        [chatId, msg.key.id]
+      );
+      if (existentes.length > 0) return;
+    }
 
     let mediaPath = null;
     let mediaMimetype = null;
@@ -177,18 +193,23 @@ async function handleIncomingMessage(executivoId, sock, msg) {
 
     const { rows } = await pool.query(
       `INSERT INTO messages (chat_id, wa_message_id, from_me, sender_name, sender_number, tipo, texto, media_path, media_mimetype, wa_timestamp)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (chat_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
+       RETURNING *`,
       [chatId, msg.key.id, fromMe, senderName, senderNumber, tipo, texto, mediaPath, mediaMimetype, new Date(tsMs)]
     );
+    if (rows.length === 0) return; // outra chamada concorrente já inseriu essa mensagem
 
-    emit('nova_mensagem', {
-      executivoId,
-      chatId,
-      waChatId,
-      chatName,
-      isGroup,
-      message: rows[0],
-    });
+    if (!opts.silent) {
+      emit('nova_mensagem', {
+        executivoId,
+        chatId,
+        waChatId,
+        chatName,
+        isGroup,
+        message: rows[0],
+      });
+    }
   } catch (err) {
     console.error(`[exec ${executivoId}] erro processando mensagem:`, err);
   }
@@ -224,7 +245,11 @@ async function startSession(executivoId) {
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
-    syncFullHistory: false,
+    // Pede ao WhatsApp para sincronizar o histórico de conversas ao parear —
+    // sem isso, a ferramenta só vê mensagens a partir do momento da conexão.
+    // Só chega dado nessa sincronização logo após escanear o QR (pareamento novo);
+    // uma sessão já conectada não recebe histórico de novo sem desconectar e reconectar.
+    syncFullHistory: true,
     markOnlineOnConnect: false, // não altera o "online" do executivo
   });
 
@@ -273,6 +298,18 @@ async function startSession(executivoId) {
     for (const msg of messages) {
       await handleIncomingMessage(executivoId, sock, msg);
     }
+  });
+
+  // Chega uma vez, logo após o pareamento (escaneou o QR), com o histórico que o
+  // WhatsApp decidiu compartilhar daquele celular. Processa em silêncio (sem
+  // notificar em tempo real mensagem por mensagem) e avisa o painel no final.
+  sock.ev.on('messaging-history.set', async ({ messages: historyMessages }) => {
+    if (!historyMessages || historyMessages.length === 0) return;
+    console.log(`[exec ${executivoId}] sincronizando histórico: ${historyMessages.length} mensagens`);
+    for (const msg of historyMessages) {
+      await handleIncomingMessage(executivoId, sock, msg, { silent: true });
+    }
+    emit('historico_sincronizado', { executivoId });
   });
 
   return entry;

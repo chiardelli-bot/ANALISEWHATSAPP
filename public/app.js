@@ -5,6 +5,9 @@
     chats: [],
     chatAtivoId: null,
     socket: null,
+    mensagemMaisAntigaTs: null, // wa_timestamp da mensagem mais antiga já carregada (para "carregar anteriores")
+    podeTerMaisAntigas: false,
+    ultimoGrupoRemetente: null, // controla agrupamento visual de mensagens seguidas do mesmo remetente
   };
 
   const el = (id) => document.getElementById(id);
@@ -107,6 +110,18 @@
           renderMensagem(payload.message);
           rolarParaFinal();
         }
+      }
+    });
+
+    // Disparado uma vez, logo após um executivo parear o QR: o WhatsApp entregou
+    // o histórico de conversas do celular. Recarrega a lista/conversa na tela.
+    estado.socket.on('historico_sincronizado', async (payload) => {
+      if (payload.executivoId !== estado.executivoAtivoId) return;
+      const chatAberto = estado.chatAtivoId;
+      await carregarChats(estado.executivoAtivoId);
+      if (chatAberto) {
+        const chat = estado.chats.find((c) => c.id === chatAberto);
+        if (chat) await selecionarChat(chat);
       }
     });
   }
@@ -244,30 +259,100 @@
     });
   }
 
+  const LIMITE_MENSAGENS = 100;
+
   async function selecionarChat(chat) {
     estado.chatAtivoId = chat.id;
     renderChats();
     el('titulo-chat').textContent = chat.nome || chat.wa_chat_id.split('@')[0];
-    const mensagens = await api(`/api/chats/${chat.id}/mensagens?limit=200`);
+    estado.ultimoGrupoRemetente = null;
+    const mensagens = await api(`/api/chats/${chat.id}/mensagens?limit=${LIMITE_MENSAGENS}`);
     const lista = el('lista-mensagens');
     lista.innerHTML = '';
-    mensagens.forEach(renderMensagem);
+    mensagens.forEach((m) => renderMensagem(m));
+    estado.mensagemMaisAntigaTs = mensagens[0]?.wa_timestamp || null;
+    estado.podeTerMaisAntigas = mensagens.length === LIMITE_MENSAGENS;
+    atualizarBotaoCarregarAnteriores();
     rolarParaFinal();
   }
 
-  function renderMensagem(msg) {
+  el('btn-carregar-anteriores').addEventListener('click', carregarMensagensAnteriores);
+
+  async function carregarMensagensAnteriores() {
+    if (!estado.chatAtivoId || !estado.mensagemMaisAntigaTs) return;
+    const btn = el('btn-carregar-anteriores');
+    btn.disabled = true;
+    btn.textContent = 'Carregando…';
+    try {
+      const mensagens = await api(
+        `/api/chats/${estado.chatAtivoId}/mensagens?limit=${LIMITE_MENSAGENS}&before=${encodeURIComponent(estado.mensagemMaisAntigaTs)}`
+      );
+      const lista = el('lista-mensagens');
+      const alturaAntes = lista.scrollHeight;
+      // Insere no topo, mais antiga primeiro. A referência fica fixa no que hoje é a
+      // primeira mensagem da tela — cada nova é colocada antes dela, na ordem certa.
+      const referencia = lista.firstChild;
+      estado.ultimoGrupoRemetente = null;
+      mensagens.forEach((m, i) => renderMensagem(m, { antes: referencia, forcarCabecalho: i === mensagens.length - 1 }));
+      if (mensagens.length > 0) {
+        estado.mensagemMaisAntigaTs = mensagens[0].wa_timestamp;
+      }
+      estado.podeTerMaisAntigas = mensagens.length === LIMITE_MENSAGENS;
+      // mantém a posição de leitura em vez de pular para o topo/fundo
+      lista.scrollTop = lista.scrollHeight - alturaAntes;
+    } finally {
+      btn.disabled = false;
+      atualizarBotaoCarregarAnteriores();
+    }
+  }
+
+  function atualizarBotaoCarregarAnteriores() {
+    const btn = el('btn-carregar-anteriores');
+    btn.textContent = 'Carregar mensagens anteriores';
+    btn.classList.toggle('oculto', !estado.podeTerMaisAntigas);
+  }
+
+  function renderMensagem(msg, opts = {}) {
     const lista = el('lista-mensagens');
+    const chaveGrupo = msg.from_me ? 'me' : (msg.sender_number || msg.sender_name || 'outro');
+    const mesmoGrupo = !opts.forcarCabecalho && estado.ultimoGrupoRemetente === chaveGrupo;
+    estado.ultimoGrupoRemetente = chaveGrupo;
+
     const div = document.createElement('div');
-    div.className = 'bolha ' + (msg.from_me ? 'enviada' : 'recebida');
+    div.className = 'bolha ' + (msg.from_me ? 'enviada' : 'recebida') + (mesmoGrupo ? ' seguida' : ' nova-origem');
 
     let corpo = '';
-    if (!msg.from_me) {
+    if (!msg.from_me && !mesmoGrupo) {
       corpo += `<div class="remetente">${escapeHtml(msg.sender_name || msg.sender_number || '')}</div>`;
     }
     corpo += renderConteudo(msg);
     corpo += `<div class="hora-msg">${formatarHora(msg.wa_timestamp)}</div>`;
     div.innerHTML = corpo;
-    lista.appendChild(div);
+
+    if (opts.antes) {
+      lista.insertBefore(div, opts.antes);
+    } else {
+      lista.appendChild(div);
+    }
+
+    // Imagens/vídeos só ganham altura real depois de carregar — sem isso, a rolagem
+    // para o final acontece cedo demais e mensagens mais novas ficam escondidas
+    // abaixo da mídia. Reancora no fundo quando a mídia carrega, mas só se o usuário
+    // já estava lendo o final (senão atrapalharia quem rolou pra cima pra ler antigas).
+    if (!opts.antes) {
+      div.querySelectorAll('img, video').forEach((media) => {
+        const evento = media.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
+        const aoCarregar = () => {
+          if (estaPertoDoFinal(lista)) rolarParaFinal();
+        };
+        media.addEventListener(evento, aoCarregar, { once: true });
+        media.addEventListener('error', aoCarregar, { once: true });
+      });
+    }
+  }
+
+  function estaPertoDoFinal(lista) {
+    return lista.scrollHeight - lista.scrollTop - lista.clientHeight < 150;
   }
 
   function renderConteudo(msg) {

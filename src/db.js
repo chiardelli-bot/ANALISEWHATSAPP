@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, wa_timestamp DESC);
+
+-- Evita duplicar mensagens quando o histórico do WhatsApp é sincronizado
+-- (a mesma mensagem pode chegar de novo via "messaging-history.set").
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_waid
+  ON messages(chat_id, wa_message_id) WHERE wa_message_id IS NOT NULL;
 `;
 
 async function initDb() {
