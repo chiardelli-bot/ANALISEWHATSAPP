@@ -44,8 +44,30 @@ function extMimetype(mimetype) {
   return map[mimetype] || mimetype.split('/')[1]?.split(';')[0] || 'bin';
 }
 
+// WhatsApp embrulha o conteúdo real dentro de "wrappers" em vários casos comuns:
+// mensagens temporárias (disappearing messages), "ver uma vez", documento com legenda
+// e mensagens editadas. Sem desembrulhar, o conteúdo real fica invisível e a mensagem
+// cai sempre em "other"/texto nulo — foi o que causou as conversas aparecerem vazias.
+function unwrapMessage(message) {
+  if (!message) return message;
+  const wrapperKeys = [
+    'ephemeralMessage',
+    'viewOnceMessage',
+    'viewOnceMessageV2',
+    'viewOnceMessageV2Extension',
+    'documentWithCaptionMessage',
+    'editedMessage',
+  ];
+  for (const key of wrapperKeys) {
+    if (message[key]?.message) {
+      return unwrapMessage(message[key].message);
+    }
+  }
+  return message;
+}
+
 function getMessageTypeAndText(msg) {
-  const m = msg.message;
+  const m = unwrapMessage(msg.message);
   if (!m) return { tipo: 'other', texto: null };
   if (m.conversation) return { tipo: 'text', texto: m.conversation };
   if (m.extendedTextMessage) return { tipo: 'text', texto: m.extendedTextMessage.text };
@@ -59,11 +81,35 @@ function getMessageTypeAndText(msg) {
     return { tipo: 'location', texto: `Localização: ${degreesLatitude}, ${degreesLongitude}` };
   }
   if (m.contactMessage) return { tipo: 'other', texto: `Contato: ${m.contactMessage.displayName || ''}` };
+  if (m.contactsArrayMessage) return { tipo: 'other', texto: 'Contatos compartilhados' };
+  if (m.buttonsResponseMessage) return { tipo: 'text', texto: m.buttonsResponseMessage.selectedDisplayText || null };
+  if (m.listResponseMessage) return { tipo: 'text', texto: m.listResponseMessage.title || null };
+  if (m.templateButtonReplyMessage) return { tipo: 'text', texto: m.templateButtonReplyMessage.selectedDisplayText || null };
+  if (m.reactionMessage) return { tipo: 'other', texto: m.reactionMessage.text ? `Reagiu: ${m.reactionMessage.text}` : null };
+  if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) {
+    const poll = m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3;
+    return { tipo: 'other', texto: `Enquete: ${poll.name || ''}` };
+  }
   return { tipo: 'other', texto: null };
 }
 
-function hasDownloadableMedia(msg) {
+// Mensagens puramente de protocolo (revogação, sincronização, ajuste de tempo de
+// mensagem temporária, chaves de grupo) não são conversas reais — não devem ser
+// salvas nem exibidas.
+function isProtocolOnlyMessage(msg) {
   const m = msg.message;
+  if (!m) return true;
+  const contentKeys = Object.keys(m).filter((k) => k !== 'messageContextInfo');
+  if (contentKeys.length === 0) return true;
+  const onlyProtocolKeys = contentKeys.every((k) => [
+    'protocolMessage',
+    'senderKeyDistributionMessage',
+  ].includes(k));
+  return onlyProtocolKeys;
+}
+
+function hasDownloadableMedia(msg) {
+  const m = unwrapMessage(msg.message);
   return !!(m && (m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.stickerMessage));
 }
 
@@ -84,6 +130,7 @@ async function upsertChat(executivoId, waChatId, nome, isGroup, lastMessageAt, p
 async function handleIncomingMessage(executivoId, sock, msg) {
   try {
     if (!msg.message) return;
+    if (isProtocolOnlyMessage(msg)) return;
     const waChatId = msg.key.remoteJid;
     if (!waChatId || waChatId === 'status@broadcast') return;
     const isGroup = waChatId.endsWith('@g.us');
@@ -109,11 +156,12 @@ async function handleIncomingMessage(executivoId, sock, msg) {
     if (hasDownloadableMedia(msg)) {
       try {
         const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
-        const mm = msg.message.imageMessage?.mimetype
-          || msg.message.videoMessage?.mimetype
-          || msg.message.audioMessage?.mimetype
-          || msg.message.documentMessage?.mimetype
-          || msg.message.stickerMessage?.mimetype
+        const unwrapped = unwrapMessage(msg.message);
+        const mm = unwrapped.imageMessage?.mimetype
+          || unwrapped.videoMessage?.mimetype
+          || unwrapped.audioMessage?.mimetype
+          || unwrapped.documentMessage?.mimetype
+          || unwrapped.stickerMessage?.mimetype
           || 'application/octet-stream';
         mediaMimetype = mm;
         const dir = path.join(MEDIA_DIR, `exec_${executivoId}`);
